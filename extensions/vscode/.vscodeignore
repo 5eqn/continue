@@ -12,6 +12,7 @@ vsc-extension-quickstart.md
 **/.env
 **/env
 node_modules/**
+../../**/*
 
 **/.pytest_cache
 **/__pycache__
