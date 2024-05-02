@@ -73,7 +73,10 @@ export async function getPromptParts(
     maxTokens;
 
   let fullFileContentsList = fullFileContents.split("\n");
-  let maxStartLine = rif.range.start.line;
+
+  // RIF range is one-indexed, convert to zero-indexed
+  // +1 for minEndLine to start after end line
+  let maxStartLine = rif.range.start.line - 1;
   let minEndLine = rif.range.end.line;
   let curStartLine = 0;
   let curEndLine = fullFileContentsList.length - 1;
@@ -104,6 +107,11 @@ export async function getPromptParts(
   let fileSuffix = fullFileContentsList
     .slice(minEndLine, curEndLine - 1)
     .join("\n");
+
+  // Append unselected code in selected lines to prefix and suffix
+  // TODO character is always 0, fix this
+  // filePrefix = filePrefix + fullFileContentsList[maxStartLine].substring(0, rif.range.start.character);
+  // fileSuffix = fullFileContentsList[minEndLine - 1].substring(rif.range.end.character) + fileSuffix;
 
   if (rif.contents.length > 0) {
     let lines = rif.contents.split(/\r?\n/);
