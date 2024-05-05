@@ -397,7 +397,7 @@ function TipTapEditor(props: TipTapEditorProps) {
         for (const node of p.content) {
           if (
             node.type === "slashcommand" &&
-            ["/edit", "/comment"].includes(node.attrs.label)
+            ["/edit", "/edit+", "/comment"].includes(node.attrs.label)
           ) {
             // Update context items
             dispatch(
