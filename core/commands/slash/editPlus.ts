@@ -1,68 +1,57 @@
 import { ContextItemWithId, ILLM, Range, SlashCommand } from "../..";
 import { IAgent, runAgent } from "../../agent";
 import EditTool from "../../agent/tools/edit";
+import { getMarkdownLanguageTagForFile } from "../../util";
 import { addLineNumber } from "../../util/lineNumber";
+import PromptBuilder from "../../util/promptBuilder";
 import { contextItemToRangeInFileWithContents } from "../util";
 
 /// Generate prompt for editing.
-function getContext(code: string, range: Range, request: string): string {
-  return `You are an autonomous programmer. Below is some code for you to edit:
-
-\`\`\`
-${code}
-\`\`\`
-
-Your task is to edit between lines ${range.start.line}-${range.end.line}, in order to "${request}".`;
-}
-
-/// Generate prompt with pruning.
-function getPrunedContext(
+function getPromptBuilder(
   model: ILLM,
-  content: string,
+  code: string,
+  language: string,
   range: Range,
   request: string,
-): string {
-  const code = addLineNumber(content);
-  const codeList = code.split("\n");
-  const context = getContext(code, range, request);
-  const bufferForFunctions = 400;
-  const maxStartLine = range.start.line - 1;
-  const minEndLine = range.end.line - 1;
+): PromptBuilder {
+  // Get code parts
+  const codeWithLineNumber = addLineNumber(code);
+  const codeList = codeWithLineNumber.split("\n");
+  const prefixLength = range.start.line - 1;
+  const suffixLength = codeList.length - range.end.line;
 
-  // Keep track of token count and selection range
-  // The 80% total token is added, because the longest conversation is:
-  // "context" + "action" + "realCode" + "givenCode" + "action"
-  // We reserve space for the later 4 parts
-  let totalTokens =
-    model.countTokens(context) + bufferForFunctions + model.contextLength * 0.8;
-  let curStartLine = 0;
-  let curEndLine = codeList.length - 1;
+  // Build message
+  const BUFFER_FOR_FUNCTIONS = 400;
+  const promptBuilder = new PromptBuilder(
+    model,
+    model.contextLength / 2 - BUFFER_FOR_FUNCTIONS,
+  );
+  promptBuilder.addUserMessage(
+    `You are an autonomous programmer. Below is some code for you to edit:`,
+  );
+  promptBuilder.addUserMessage(`\n\`\`\`${language}`);
 
-  // Shrink end first
-  if (totalTokens > model.contextLength) {
-    while (curEndLine > minEndLine) {
-      totalTokens -= model.countTokens(codeList[curEndLine]);
-      curEndLine--;
-      if (totalTokens < model.contextLength) {
-        break;
-      }
-    }
+  // Prefix has higher priority, closer to edit area means higher priority
+  for (let i = 0; i < prefixLength; i++) {
+    promptBuilder.addUserMessage(codeList[i], i + suffixLength + 1);
   }
 
-  // If end can no longer be shrunk, shrink from the beginning
-  if (totalTokens > model.contextLength) {
-    while (curStartLine < maxStartLine) {
-      curStartLine++;
-      totalTokens -= model.countTokens(codeList[curStartLine]);
-      if (totalTokens < model.contextLength) {
-        break;
-      }
-    }
+  // Edit area should not be deleted
+  for (let i = prefixLength; i < range.end.line; i++) {
+    promptBuilder.addUserMessage(codeList[i]);
   }
 
-  // Generate new context from shrunk code
-  let shrunkCode = codeList.slice(curStartLine, curEndLine + 1).join("\n");
-  return getContext(shrunkCode, range, request);
+  // Suffix has lower priority, farther from edit area means lower priority
+  for (let i = range.end.line; i < codeList.length; i++) {
+    promptBuilder.addUserMessage(codeList[i], codeList.length - i);
+  }
+
+  // Rest of the message
+  promptBuilder.addUserMessage(`\`\`\``);
+  promptBuilder.addUserMessage(
+    `\nYour task is to edit between lines ${range.start.line}-${range.end.line}, in order to "${request}".`,
+  );
+  return promptBuilder;
 }
 
 const EditPlusSlashCommand: SlashCommand = {
@@ -113,8 +102,14 @@ const EditPlusSlashCommand: SlashCommand = {
     };
 
     // Run agent
-    const context = getPrunedContext(llm, fullFileContents, rif.range, request);
-    for await (const message of runAgent(agent, context)) {
+    const promptBuilder = getPromptBuilder(
+      llm,
+      fullFileContents,
+      getMarkdownLanguageTagForFile(rif.filepath),
+      rif.range,
+      request,
+    );
+    for await (const message of runAgent(agent, promptBuilder)) {
       yield message;
     }
   },

@@ -75,58 +75,61 @@ export default class EditTool implements ITool {
     this.name = "edit";
     this.intent = `edit the code`;
     this.prefix = "I want to edit";
-    this.format = `I want to edit lines X-Y. Before edit, the code in lines X-Y is:
+    this.format = `I want to edit lines X-Y. 
+    
+I'm sure it's inside lines ${params.boundStart}-${params.boundEnd}. 
+
+Before edit, the code in lines X-Y is:
 
 \`\`\`
 (code)
 \`\`\`
 
-- Input value means (description).
-- Output value means (description).
-- Implementation is (description).
-
-After making minimum changes to "${params.request}", the code is:
+After editing to "${params.request}", the code is:
 
 \`\`\`
 (code)
 \`\`\``;
     this.params = params;
     this.step = [
-      matchRegex(
-        /I want to edit lines (\d+)-(\d+)\. Before edit, the code in lines (\d+)-(\d+) is:/i,
-        (match) => {
-          // Set range
-          this.rangeStart = parseInt(match[1]);
-          this.rangeEnd = parseInt(match[2]);
+      matchRegex(/I want to edit lines (\d+)-(\d+)/i, (match) => {
+        // Set range
+        this.rangeStart = parseInt(match[1]);
+        this.rangeEnd = parseInt(match[2]);
 
-          // Check consistency
-          if (
-            this.rangeStart !== parseInt(match[3]) ||
-            this.rangeEnd !== parseInt(match[4])
-          ) {
-            return {
-              status: "error",
-              message: `Inconsistent range: ${this.rangeStart}-${this.rangeEnd} vs ${match[3]}-${match[4]}`,
-            };
-          }
-
-          // Check range validity
-          if (
-            this.rangeStart < this.params.boundStart ||
-            this.rangeEnd > this.params.boundEnd ||
-            this.rangeStart > this.rangeEnd
-          ) {
-            return {
-              status: "error",
-              message: `Invalid range: ${this.rangeStart}-${this.rangeEnd}`,
-            };
-          }
+        // Check range validity
+        if (
+          this.rangeStart < this.params.boundStart ||
+          this.rangeEnd > this.params.boundEnd ||
+          this.rangeStart > this.rangeEnd
+        ) {
           return {
-            status: "break",
-            message: `Got edit range: ${this.rangeStart}-${this.rangeEnd}!`,
+            status: "error",
+            message: `Range should be in ${this.params.boundStart}-${this.params.boundEnd}, but your range is ${this.rangeStart}-${this.rangeEnd}!`,
           };
-        },
-      ),
+        }
+        return {
+          status: "break",
+          message: `Got edit range: ${this.rangeStart}-${this.rangeEnd}!`,
+        };
+      }),
+      matchRegex(/I'm sure it's inside lines/i), // TODO check line number
+      matchRegex(/Before edit, the code in lines (\d+)-(\d+) is/i, (match) => {
+        // Check consistency
+        if (
+          this.rangeStart !== parseInt(match[1]) ||
+          this.rangeEnd !== parseInt(match[2])
+        ) {
+          return {
+            status: "error",
+            message: `Range ${this.rangeStart}-${this.rangeEnd} is inconsistent with ${match[3]}-${match[4]}!`,
+          };
+        }
+        return {
+          status: "break",
+          message: `Edit range is confirmed!`,
+        };
+      }),
       matchCodeBlock((line) => {
         // Accumulate code before
         this.codeBefore += line + "\n";
@@ -169,10 +172,7 @@ They are not consistent, so your edit is invalid.`,
           message: "Code before edit is consistent with real code!",
         };
       }),
-      matchRegex(/Input value means/i),
-      matchRegex(/Output value means/i),
-      matchRegex(/Implementation is/i),
-      matchRegex(/After making minimum changes/i),
+      matchRegex(/After editing to/i),
       matchCodeBlock((line) => {
         // Accumulate code after
         this.codeAfter += line + "\n";
