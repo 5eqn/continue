@@ -1,6 +1,7 @@
 import { ContextItemWithId, ILLM, Range, SlashCommand } from "../..";
 import { IAgent, runAgent } from "../../agent";
 import EditTool from "../../agent/tools/edit";
+import { stripImages } from "../../llm/countTokens";
 import { getMarkdownLanguageTagForFile } from "../../util";
 import { addLineNumber } from "../../util/lineNumber";
 import PromptBuilder from "../../util/promptBuilder";
@@ -58,15 +59,7 @@ const EditPlusSlashCommand: SlashCommand = {
   name: "edit+",
   description: "Enhanced editing",
   run: async function* ({ ide, llm, input, contextItems }) {
-    // Get request text
-    const request = input.match(/\/edit\+\s*(.*)/)?.[1]?.trim() || "";
-    if (request.length === 0) {
-      yield "💀 Please provide a request. For example, `/edit+ implement this function`.\n\n";
-      return;
-    }
-    yield `🤣 Got request: "${request}"...\n\n`;
-
-    // Get code to edit
+    // Find context item to get code range
     let contextItemToEdit = contextItems.find(
       (item: ContextItemWithId) =>
         item.editing && item.id.providerTitle === "code",
@@ -80,6 +73,21 @@ const EditPlusSlashCommand: SlashCommand = {
       yield "💀 Error: Please highlight the code you want to edit, then press `cmd/ctrl+shift+L` to add it to chat\n\n";
       return;
     }
+
+    // Get request text
+    let inputWithoutCode = stripImages(input).replace(
+      `\`\`\`${contextItemToEdit.name}\n${contextItemToEdit.content}\n\`\`\`\n`,
+      "",
+    );
+    const request =
+      inputWithoutCode.match(/\/edit\+\s*(.*)/)?.[1]?.trim() || "";
+    if (request.length === 0) {
+      yield "💀 Please provide a request. For example, `/edit+ implement this function`.\n\n";
+      return;
+    }
+    yield `🤣 Got request: "${request}"...\n\n`;
+
+    // Get code to edit
     const rif = contextItemToRangeInFileWithContents(contextItemToEdit);
     await ide.saveFile(rif.filepath);
     let fullFileContents = await ide.readFile(rif.filepath);
