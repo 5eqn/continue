@@ -96,7 +96,7 @@ export function matchRegex(
 
     // Error if last line
     if (last) {
-      return resultError(`Expected line to match regex "${regex}"`);
+      return resultError(`Expected "${regex}" to be found in your reply!`);
     }
 
     // Otherwise just continue matching the next line
@@ -126,7 +126,7 @@ export function matchCodeBlock(onCode: (line: string) => void): ToolStep {
 
     // If last line, error if code doesn't complete
     if (last) {
-      return resultError("Expected code block");
+      return resultError("Expected code block in your reply!");
     }
 
     // Otherwise continue matching the next line
