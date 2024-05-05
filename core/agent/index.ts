@@ -1,10 +1,12 @@
-import { ILLM } from "..";
+import { ChatMessage, ILLM } from "..";
 import { streamLines } from "../diff/util";
 import { ITool, runTool } from "./tools";
 
+export type ToolBuilder = () => ITool;
+
 export interface IAgent {
   readonly llm: ILLM;
-  readonly tools: ITool[];
+  readonly tools: ToolBuilder[];
 }
 
 /// Run agent with context.
@@ -13,13 +15,20 @@ export interface IAgent {
 export async function* runAgent(agent: IAgent, context: string) {
   // Generate prompt from context and tools
   let prompt = context;
-  for (const tool of agent.tools) {
+  const tools = agent.tools.map((builder) => builder());
+  for (const tool of tools) {
     prompt += `\n\nIf you want to **${tool.intent}**, please format your reply as:\n\n${tool.format}`;
   }
   prompt += "\n\nWhat's your next action?";
+  let message: ChatMessage[] = [
+    {
+      role: "user",
+      content: prompt,
+    },
+  ];
 
   // Agent loop
-  let retriesLeft = 1;
+  let retriesLeft = 3;
   while (true) {
     // Handle retry
     if (retriesLeft <= 0) {
@@ -30,33 +39,36 @@ export async function* runAgent(agent: IAgent, context: string) {
       retriesLeft--;
     }
 
-    // Reset tools
-    for (const tool of agent.tools) {
-      tool.reset();
-    }
-
     // Start agent with prompt
+    // The longest conversation is: "context" + "action" + "realCode" + "givenCode" + "action"
+    // So we set input maxTokens to 80% of context length
     yield "😅 Starting agent loop...\n\n";
-    const completion = agent.llm.streamChat(
-      [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-      {
-        temperature: 0.5,
-      },
-    );
+    const completion = agent.llm.streamChat(message, {
+      temperature: 0.5,
+    });
     const lineStream = streamLines(completion);
 
-    // Use tools
+    // Build tools for this loop
+    const tools = agent.tools.map((builder) => builder());
+
+    // Some state to keep track of when reading reply
     let selectedTool: ITool | undefined;
-    let error = false;
+    let error = "";
+    let reply = "";
+
+    // Use tools according to reply
     for await (const line of lineStream) {
+      // Record reply
+      reply += line + "\n";
+
+      // Skip if in error
+      if (error) {
+        continue;
+      }
+
       // Try to select tool if not selected
       if (!selectedTool) {
-        for (const tool of agent.tools) {
+        for (const tool of tools) {
           if (tool.prefix && line.startsWith(tool.prefix)) {
             selectedTool = tool;
             yield `🔧 Agent selected tool "${tool.name}"!\n\n`;
@@ -70,10 +82,10 @@ export async function* runAgent(agent: IAgent, context: string) {
         while (true) {
           const result = runTool(selectedTool, line, false);
 
-          // Handle error by retrying from scratch
+          // Handle error by retrying
           if (result.status === "error") {
-            yield `💀 Tool error: ${result.message}, retrying!\n\n`;
-            error = true;
+            yield `💀 Tool error: ${result.message} retrying!\n\n`;
+            error = result.message;
             break;
           }
 
@@ -93,16 +105,23 @@ export async function* runAgent(agent: IAgent, context: string) {
           // Otherwise stop looping, because tool step did not increase
           break;
         }
-
-        // If error is generated in inner loop, retry
-        if (error) {
-          break;
-        }
       }
     }
 
-    // If error is generated in inner loop, retry
+    // If error is generated in inner loop, read all output
+    // and retry with one layer of history
     if (error) {
+      if (message.length > 1) {
+        message = message.slice(0, 1);
+      }
+      message.push({
+        role: "assistant",
+        content: reply,
+      });
+      message.push({
+        role: "user",
+        content: `Your reply has wrong format: ${error} Please retry!`,
+      });
       continue;
     }
 
@@ -113,10 +132,21 @@ export async function* runAgent(agent: IAgent, context: string) {
     }
 
     // If tool is selected, check if all steps are done
-    // If not, report error and retry
+    // If not, report error and retry with one layer of history
     const result = runTool(selectedTool, "", true);
     if (result.status === "error") {
       yield `💀 Tool error: ${result.message}, retrying!\n\n`;
+      if (message.length > 1) {
+        message = message.slice(0, 1);
+      }
+      message.push({
+        role: "assistant",
+        content: reply,
+      });
+      message.push({
+        role: "user",
+        content: `Your reply has wrong format: ${result.message}! Please retry!`,
+      });
       continue;
     }
 
