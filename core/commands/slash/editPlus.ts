@@ -1,20 +1,68 @@
-import { ContextItemWithId, Range, SlashCommand } from "../..";
+import { ContextItemWithId, ILLM, Range, SlashCommand } from "../..";
 import { IAgent, runAgent } from "../../agent";
 import EditTool from "../../agent/tools/edit";
 import { addLineNumber } from "../../util/lineNumber";
 import { contextItemToRangeInFileWithContents } from "../util";
 
 /// Generate prompt for editing.
-function getContext(content: string, range: Range, request: string): string {
+function getContext(code: string, range: Range, request: string): string {
   return `You are an autonomous programmer. Below is some code for you to edit:
 
 \`\`\`
-${addLineNumber(content)}
+${code}
 \`\`\`
 
-Your task is to edit the code, in order to "${request}".
+Your task is to edit between lines ${range.start.line}-${range.end.line}, in order to "${request}".`;
+}
 
-You can only edit between lines ${range.start.line}-${range.end.line}.`;
+/// Generate prompt with pruning.
+function getPrunedContext(
+  model: ILLM,
+  content: string,
+  range: Range,
+  request: string,
+): string {
+  const code = addLineNumber(content);
+  const codeList = code.split("\n");
+  const context = getContext(code, range, request);
+  const bufferForFunctions = 400;
+  const maxStartLine = range.start.line - 1;
+  const minEndLine = range.end.line - 1;
+
+  // Keep track of token count and selection range
+  // The 80% total token is added, because the longest conversation is:
+  // "context" + "action" + "realCode" + "givenCode" + "action"
+  // We reserve space for the later 4 parts
+  let totalTokens =
+    model.countTokens(context) + bufferForFunctions + model.contextLength * 0.8;
+  let curStartLine = 0;
+  let curEndLine = codeList.length - 1;
+
+  // Shrink end first
+  if (totalTokens > model.contextLength) {
+    while (curEndLine > minEndLine) {
+      totalTokens -= model.countTokens(codeList[curEndLine]);
+      curEndLine--;
+      if (totalTokens < model.contextLength) {
+        break;
+      }
+    }
+  }
+
+  // If end can no longer be shrunk, shrink from the beginning
+  if (totalTokens > model.contextLength) {
+    while (curStartLine < maxStartLine) {
+      curStartLine++;
+      totalTokens -= model.countTokens(codeList[curStartLine]);
+      if (totalTokens < model.contextLength) {
+        break;
+      }
+    }
+  }
+
+  // Generate new context from shrunk code
+  let shrunkCode = codeList.slice(curStartLine, curEndLine + 1).join("\n");
+  return getContext(shrunkCode, range, request);
 }
 
 const EditPlusSlashCommand: SlashCommand = {
@@ -51,20 +99,21 @@ const EditPlusSlashCommand: SlashCommand = {
     const agent: IAgent = {
       llm,
       tools: [
-        new EditTool({
-          request,
-          boundStart: rif.range.start.line,
-          boundEnd: rif.range.end.line,
-          fileContent: fullFileContents,
-          showDiff: (fileContent) => {
-            ide.showDiff(rif.filepath, fileContent, 1);
-          },
-        }),
+        () =>
+          new EditTool({
+            request,
+            boundStart: rif.range.start.line,
+            boundEnd: rif.range.end.line,
+            fileContent: fullFileContents,
+            showDiff: (fileContent) => {
+              ide.showDiff(rif.filepath, fileContent, 1);
+            },
+          }),
       ],
     };
 
     // Run agent
-    const context = getContext(fullFileContents, rif.range, request);
+    const context = getPrunedContext(llm, fullFileContents, rif.range, request);
     for await (const message of runAgent(agent, context)) {
       yield message;
     }
