@@ -75,12 +75,11 @@ const EditPlusSlashCommand: SlashCommand = {
     }
 
     // Get request text
-    let inputWithoutCode = stripImages(input).replace(
+    const content = input.replace("/edit+", "").trimStart();
+    const request = stripImages(content).replace(
       `\`\`\`${contextItemToEdit.name}\n${contextItemToEdit.content}\n\`\`\`\n`,
       "",
     );
-    const request =
-      inputWithoutCode.match(/\/edit\+\s*(.*)/)?.[1]?.trim() || "";
     if (request.length === 0) {
       yield "💀 Please provide a request. For example, `/edit+ implement this function`.\n\n";
       return;
