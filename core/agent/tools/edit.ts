@@ -62,15 +62,6 @@ export default class EditTool implements ITool {
   codeBefore: string = "";
   codeAfter: string = "";
 
-  reset(): void {
-    this.currentStep = 0;
-    this.rangeStart = 0;
-    this.rangeEnd = 0;
-    this.codeReference = "";
-    this.codeBefore = "";
-    this.codeAfter = "";
-  }
-
   constructor(params: EditToolParams) {
     this.name = "edit";
     this.intent = `edit the code`;
