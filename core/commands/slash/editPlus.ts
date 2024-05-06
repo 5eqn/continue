@@ -1,5 +1,6 @@
 import { ContextItemWithId, ILLM, Range, SlashCommand } from "../..";
 import { IAgent, runAgent } from "../../agent";
+import ConfirmTool from "../../agent/tools/confirm";
 import EditTool from "../../agent/tools/edit";
 import { stripImages } from "../../llm/countTokens";
 import { getMarkdownLanguageTagForFile } from "../../util";
@@ -95,16 +96,16 @@ const EditPlusSlashCommand: SlashCommand = {
     const agent: IAgent = {
       llm,
       tools: [
-        () =>
-          new EditTool({
-            request,
-            boundStart: rif.range.start.line,
-            boundEnd: rif.range.end.line,
-            fileContent: fullFileContents,
-            showDiff: (fileContent) => {
-              ide.showDiff(rif.filepath, fileContent, 1);
-            },
-          }),
+        new EditTool({
+          request,
+          boundStart: rif.range.start.line,
+          boundEnd: rif.range.end.line,
+          fileContent: fullFileContents,
+          showDiff: (fileContent) => {
+            ide.showDiff(rif.filepath, fileContent, 1);
+          },
+        }),
+        new ConfirmTool(request),
       ],
     };
 

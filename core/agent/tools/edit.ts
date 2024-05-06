@@ -1,5 +1,14 @@
-import { ITool, ToolStep, matchRegex, matchCodeBlock, matchAssert } from ".";
-import { removeLineNumber } from "../../util/lineNumber";
+import {
+  ITool,
+  ToolStep,
+  matchRegex,
+  matchCodeBlock,
+  matchAssert,
+  matchString,
+  resultError,
+  resultBreak,
+} from ".";
+import { addLineNumber, removeLineNumber } from "../../util/lineNumber";
 
 /// Parameters for Edit tool
 interface EditToolParams {
@@ -23,12 +32,12 @@ interface EditToolParams {
 /// (typically the code before edit)
 function formatIndent(code: string, ref: string): string {
   // Trim code and reference
-  let trimmedCode = code.trimEnd();
-  let trimmedRef = ref.trimEnd();
+  const trimmedCode = code.trimEnd();
+  const trimmedRef = ref.trimEnd();
 
   // Split code and reference by line
-  let codeLines = trimmedCode.split("\n");
-  let refLines = trimmedRef.split("\n");
+  const codeLines = trimmedCode.split("\n");
+  const refLines = trimmedRef.split("\n");
 
   // Fail if code and reference have different line count
   if (codeLines.length !== refLines.length) {
@@ -38,9 +47,9 @@ function formatIndent(code: string, ref: string): string {
   // For each line, make sure code has same indent with refence
   let formattedCode = [];
   for (let i = 0; i < codeLines.length; i++) {
-    let codeLine = codeLines[i];
-    let refLine = refLines[i];
-    let indentLine = refLine.match(/^\s*/)![0];
+    const codeLine = codeLines[i];
+    const refLine = refLines[i];
+    const indentLine = refLine.match(/^\s*/)![0];
     formattedCode.push(indentLine + codeLine.trim());
   }
 
@@ -54,8 +63,12 @@ export default class EditTool implements ITool {
   readonly format: string;
   readonly prefix: string;
   readonly params: EditToolParams;
-  readonly step: ToolStep[];
 
+  // Persistent state
+  fileContent: string;
+
+  // Ephermeral state
+  steps: ToolStep[];
   currentStep: number = 0;
   rangeStart: number = 0;
   rangeEnd: number = 0;
@@ -66,69 +79,118 @@ export default class EditTool implements ITool {
   constructor(params: EditToolParams) {
     this.name = "edit";
     this.intent = `edit the code`;
-    this.prefix = "I want to edit";
-    this.format = `I want to edit lines X-Y. 
-    
-I'm sure it's inside lines ${params.boundStart}-${params.boundEnd}. 
+    this.prefix = "1. I'll only edit";
+    this.format = `
+1. I'll only edit lines that require changes.
+2. I'll only edit inside lines ${params.boundStart}-${params.boundEnd}.
+3. With those in mind, I choose to edit lines X-Y.
+4. Before edit, the code in lines X-Y is:
 
-Before edit, the code in lines X-Y is:
+\`\`\`
+(code)
+\`\`\`
+
+5. After editing to "${params.request}", the code will be:
 
 \`\`\`
 (code)
 \`\`\`
 
-After editing to "${params.request}", the code is:
-
-\`\`\`
-(code)
-\`\`\``;
+`;
     this.params = params;
-    this.step = [
-      matchRegex(/I want to edit lines (\d+)-(\d+)/i, (match) => {
-        // Set range
-        this.rangeStart = parseInt(match[1]);
-        this.rangeEnd = parseInt(match[2]);
+    this.fileContent = params.fileContent;
+    this.steps = [];
+  }
 
-        // Check range validity
-        if (
-          this.rangeStart < this.params.boundStart ||
-          this.rangeEnd > this.params.boundEnd ||
-          this.rangeStart > this.rangeEnd
-        ) {
-          return {
-            status: "error",
-            message: `Range should be in ${this.params.boundStart}-${this.params.boundEnd}, but your range is ${this.rangeStart}-${this.rangeEnd}!`,
-          };
-        }
-        return {
-          status: "break",
-          message: `Got edit range: ${this.rangeStart}-${this.rangeEnd}!`,
-        };
-      }),
-      matchRegex(/I'm sure it's inside lines/i), // TODO check line number
-      matchRegex(/Before edit, the code in lines (\d+)-(\d+) is/i, (match) => {
-        // Check consistency
-        if (
-          this.rangeStart !== parseInt(match[1]) ||
-          this.rangeEnd !== parseInt(match[2])
-        ) {
-          return {
-            status: "error",
-            message: `Range ${this.rangeStart}-${this.rangeEnd} is inconsistent with ${match[3]}-${match[4]}!`,
-          };
-        }
-        return {
-          status: "break",
-          message: `Edit range is confirmed!`,
-        };
-      }),
+  reset(): void {
+    this.currentStep = 0;
+    this.rangeStart = 0;
+    this.rangeEnd = 0;
+    this.codeReference = "";
+    this.codeBefore = "";
+    this.codeAfter = "";
+
+    // Steps are stateful, so they require rebuild
+    this.steps = this.buildSteps();
+  }
+
+  getSuccessMessage(): string {
+    return `Successfully edited lines ${this.rangeStart}-${this.rangeEnd}!
+
+Current code is:
+
+\`\`\`
+${addLineNumber(this.fileContent)}
+\`\`\`
+
+`;
+  }
+
+  getEditedCode(): string {
+    // Get real code parts
+    const realCodeLines = this.fileContent.split("\n");
+    const realCodePrefix = realCodeLines
+      .slice(0, this.rangeStart - 1)
+      .join("\n");
+    const realCodeSuffix = realCodeLines.slice(this.rangeEnd).join("\n");
+
+    // Get edited code
+    return realCodePrefix + "\n" + this.codeAfter + realCodeSuffix;
+  }
+
+  buildSteps(): ToolStep[] {
+    return [
+      matchString("1.", `I'll only edit lines that require changes.`),
+      matchString(
+        "2.",
+        `I'll only edit inside lines ${this.params.boundStart}-${this.params.boundEnd}.`,
+      ),
+      matchRegex(
+        "3.",
+        /With those in mind, I choose to edit lines (\d+)-(\d+)./i,
+        (match) => {
+          // Set range
+          this.rangeStart = parseInt(match[1]);
+          this.rangeEnd = parseInt(match[2]);
+
+          // Check range validity
+          if (
+            this.rangeStart < this.params.boundStart ||
+            this.rangeEnd > this.params.boundEnd ||
+            this.rangeStart > this.rangeEnd
+          ) {
+            return resultError(`You want to edit lines ${this.rangeStart}-${this.rangeEnd}, 
+but it's invalid because you can only edit between ${this.params.boundStart}-${this.params.boundEnd}!
+Please provide a valid range!`);
+          }
+          return resultBreak(
+            `Got edit range: ${this.rangeStart}-${this.rangeEnd}!`,
+          );
+        },
+      ),
+      matchRegex(
+        "4.",
+        /Before edit, the code in lines (\d+)-(\d+) is/i,
+        (match) => {
+          // Check consistency
+          if (
+            this.rangeStart !== parseInt(match[1]) ||
+            this.rangeEnd !== parseInt(match[2])
+          ) {
+            return resultError(`You quoted lines ${match[1]}-${match[2]} as the code before edit, 
+but it's unaccepted because you want to edit ${this.rangeStart}-${this.rangeEnd}!
+Please quote range consistently!`);
+          }
+          return resultBreak(`Edit range is confirmed!`);
+        },
+      ),
       matchCodeBlock((line) => {
         // Accumulate code before
         this.codeBefore += line + "\n";
       }),
-      matchAssert(() => {
+      matchAssert(async () => {
         // Get real code in one-indexed range
-        this.codeReference = this.params.fileContent
+        this.codeReference = this.fileContent
           .split("\n")
           .slice(this.rangeStart - 1, this.rangeEnd)
           .join("\n")
@@ -142,49 +204,37 @@ After editing to "${params.request}", the code is:
 
         // Ensure code before is consistent with real code
         if (this.codeBefore !== this.codeReference) {
-          return {
-            status: "error",
-            message: `Real code before edit is:
-
-\`\`\`
-${this.codeReference}
-\`\`\`
-
-What you provided is:
+          return resultError(`You replied that the code in ${this.rangeStart}-${this.rangeEnd} is:
 
 \`\`\`
 ${this.codeBefore}
 \`\`\`
 
-They are not consistent, so your edit is invalid.`,
-          };
+It's not accepted because it's inconsistent with the real code:
+
+\`\`\`
+${this.codeReference}
+\`\`\`
+
+Please provide the correct code before edit!`);
         }
-        return {
-          status: "break",
-          message: "Code before edit is consistent with real code!",
-        };
+        return resultBreak("Code before edit is consistent with real code!");
       }),
-      matchRegex(/After editing to/i),
+      matchString(
+        "5.",
+        `After editing to "${this.params.request}", the code will be`,
+      ),
       matchCodeBlock((line) => {
         // Accumulate code after
-        this.codeAfter += line + "\n";
-
-        // Remove line number from llm-generated code
-        this.codeAfter = removeLineNumber(this.codeAfter);
-
-        // Get real code parts
-        let realCodeLines = this.params.fileContent.split("\n");
-        let realCodePrefix = realCodeLines
-          .slice(0, this.rangeStart - 1)
-          .join("\n");
-        let realCodeSuffix = realCodeLines.slice(this.rangeEnd).join("\n");
-
-        // Get edited code
-        let editedCode =
-          realCodePrefix + "\n" + this.codeAfter + realCodeSuffix;
+        this.codeAfter += removeLineNumber(line).trimEnd() + "\n";
 
         // Show diff
-        this.params.showDiff(editedCode);
+        this.params.showDiff(this.getEditedCode());
+      }),
+      matchAssert(async () => {
+        // Store edited code as file content
+        this.fileContent = this.getEditedCode();
+        return resultBreak("Stored edited code!");
       }),
     ];
   }

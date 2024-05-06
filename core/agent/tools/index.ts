@@ -13,26 +13,35 @@ export interface ITool {
   readonly prefix: string;
 
   /// Steps to complete the tool
-  readonly step: ToolStep[];
+  steps: ToolStep[];
 
   /// Current step index
   currentStep: number;
+
+  /// Reset tool state
+  reset(): void;
+
+  /// Get success message
+  getSuccessMessage(): string;
 }
 
 /// Step function of a tool
 /// `line`: current line
 /// `last`: if this is the last line (if last, error if not matched)
-export type ToolStep = (line: string, last: boolean) => StepResult;
+export type ToolStep = {
+  run(line: string): Promise<StepResult>;
+  getErrorMessage(): string;
+};
 
 /// Run tool with line input
-export function runTool(tool: ITool, line: string, last: boolean): StepResult {
+export async function runTool(tool: ITool, line: string): Promise<StepResult> {
   // If all steps are done, complete
-  if (tool.currentStep >= tool.step.length) {
-    return resultComplete;
+  if (tool.currentStep >= tool.steps.length) {
+    return resultContinue;
   }
 
   // Call current step
-  let result = tool.step[tool.currentStep](line, last);
+  let result = await tool.steps[tool.currentStep].run(line);
 
   // If break and next step exists, move to next step
   if (result.status === "break") {
@@ -43,6 +52,17 @@ export function runTool(tool: ITool, line: string, last: boolean): StepResult {
   return result;
 }
 
+/// Check the status (complete or error) of a tool
+export function checkToolStatus(tool: ITool): StepResult {
+  // If all steps are done, complete
+  if (tool.currentStep >= tool.steps.length) {
+    return resultComplete(tool.getSuccessMessage());
+  }
+
+  // If last step is not complete, return error
+  return resultError(tool.steps[tool.currentStep].getErrorMessage());
+}
+
 /// Result of a tool step
 export type StepResult =
   | {
@@ -50,6 +70,7 @@ export type StepResult =
     }
   | {
       status: "complete";
+      message: string;
     }
   | {
       status: "error";
@@ -62,7 +83,9 @@ export type StepResult =
 
 /// Result builders
 export const resultContinue: StepResult = { status: "continue" };
-export const resultComplete: StepResult = { status: "complete" };
+export function resultComplete(message: string): StepResult {
+  return { status: "complete", message };
+}
 export function resultBreak(message: string): StepResult {
   return { status: "break", message };
 }
@@ -70,60 +93,81 @@ export function resultError(message: string): StepResult {
   return { status: "error", message };
 }
 
+/// Escape regex
+const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /// Matchers
-export function matchAssert(condition: () => StepResult): ToolStep {
-  return condition;
+export function matchAssert(condition: () => Promise<StepResult>): ToolStep {
+  return {
+    run: condition,
+    getErrorMessage: () => "Assertion failed!",
+  };
+}
+export function matchString(
+  prefix: string,
+  str: string,
+  callback?: () => StepResult,
+): ToolStep {
+  return matchRegex(prefix, new RegExp(escapeRegex(str), "i"), callback);
 }
 export function matchRegex(
+  prefix: string,
   regex: RegExp,
   callback?: (match: RegExpMatchArray) => StepResult,
 ): ToolStep {
-  return (line, last) => {
-    // Match regex
-    let match = line.match(regex);
+  return {
+    async run(line) {
+      // Match prefix
+      const prefixMatch = line.match(
+        new RegExp(`^${escapeRegex(prefix)}`, "i"),
+      );
 
-    // Break if regex match
-    if (match) {
-      let message = "";
-      if (callback) return callback(match);
-      return resultBreak("");
-    }
+      // If prefix match, check if regex match
+      if (prefixMatch) {
+        const regexMatch = line.match(regex);
+        if (regexMatch) {
+          if (callback) return callback(regexMatch);
+          return resultBreak("");
+        }
+        return resultError(
+          `You replied "${line}", 
+but it should match "${regex.source}"! 
+Please reformat your response correctly!`,
+        );
+      }
 
-    // Error if last line
-    if (last) {
-      return resultError(`Expected "${regex}" to be found in your reply!`);
-    }
-
-    // Otherwise just continue matching the next line
-    return resultContinue;
+      // Otherwise just continue matching the next line
+      return resultContinue;
+    },
+    getErrorMessage: () =>
+      `Your reply is missing "${prefix}"! Please reformat your response correctly!`,
   };
 }
 export function matchCodeBlock(onCode: (line: string) => void): ToolStep {
   let begun = false;
-  return (line, last) => {
-    // If already begun, this closes the code block
-    if (begun && line.startsWith("```")) {
-      if (begun) {
-        return resultBreak("");
+  return {
+    async run(line) {
+      // If already begun, this closes the code block
+      if (begun && line.startsWith("```")) {
+        if (begun) {
+          return resultBreak("");
+        }
       }
-    }
 
-    // Callback code if begun
-    if (begun) {
-      onCode(line);
-    }
+      // Callback code if begun
+      if (begun) {
+        onCode(line);
+      }
 
-    // If didn't begin, begin if encounter code block
-    if (!begun && line.startsWith("```")) {
-      begun = true;
-    }
+      // If didn't begin, begin if encounter code block
+      if (!begun && line.startsWith("```")) {
+        begun = true;
+      }
 
-    // If last line, error if code doesn't complete
-    if (last) {
-      return resultError("Expected code block in your reply!");
-    }
-
-    // Otherwise continue matching the next line
-    return resultContinue;
+      // Otherwise continue matching the next line
+      return resultContinue;
+    },
+    getErrorMessage: () =>
+      "Please reformat your reply to contain a proper code block!",
   };
 }

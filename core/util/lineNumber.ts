@@ -9,5 +9,5 @@ export function addLineNumber(input: string): string {
 
 /// Remove line number (if exists) to input code.
 export function removeLineNumber(input: string): string {
-  return input.replace(/^\s*\d+\s*\|\s/gm, "");
+  return input.replace(/^\s*\d*\s*\|\s/gm, "");
 }
