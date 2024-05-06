@@ -1,6 +1,7 @@
 import { ITool, ToolStep, matchRegex, matchCodeBlock, matchAssert } from ".";
 import { removeLineNumber } from "../../util/lineNumber";
 
+/// Parameters for Edit tool
 interface EditToolParams {
   /// Requested edit action
   request: string;

@@ -60,22 +60,20 @@ export type StepResult =
       message: string;
     };
 
+/// Result builders
 export const resultContinue: StepResult = { status: "continue" };
-
 export const resultComplete: StepResult = { status: "complete" };
-
 export function resultBreak(message: string): StepResult {
   return { status: "break", message };
 }
-
 export function resultError(message: string): StepResult {
   return { status: "error", message };
 }
 
+/// Matchers
 export function matchAssert(condition: () => StepResult): ToolStep {
   return condition;
 }
-
 export function matchRegex(
   regex: RegExp,
   callback?: (match: RegExpMatchArray) => StepResult,
@@ -100,7 +98,6 @@ export function matchRegex(
     return resultContinue;
   };
 }
-
 export function matchCodeBlock(onCode: (line: string) => void): ToolStep {
   let begun = false;
   return (line, last) => {
