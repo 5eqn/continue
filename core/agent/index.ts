@@ -1,30 +1,29 @@
 import { ILLM } from "..";
 import { streamLines } from "../diff/util";
 import PromptBuilder from "../util/promptBuilder";
-import { ITool, runTool } from "./tools";
-
-export type ToolBuilder = () => ITool;
+import { checkToolStatus, ITool, runTool } from "./tools";
 
 export interface IAgent {
   readonly llm: ILLM;
-  readonly tools: ToolBuilder[];
+  readonly tools: ITool[];
 }
 
 /// Run agent with context.
 /// Context is usually a task description,
 /// the agent will choose a tool to complete the task.
 export async function* runAgent(agent: IAgent, promptBuilder: PromptBuilder) {
-  const MAX_RETRY = 5;
+  const MAX_RETRY = 9;
   const FEEDBACK_PRIORITY = 1000;
 
   // Generate prompt from context and tools
-  const tools = agent.tools.map((builder) => builder());
-  for (const tool of tools) {
+  for (const tool of agent.tools) {
     promptBuilder.addUserMessage(
-      `\nIf you want to **${tool.intent}**, please format your reply as:\n\n${tool.format}`,
+      `\nIf you want to **${tool.intent}**, please format your reply as:\n\n${tool.format} (End of reply)`,
     );
   }
-  promptBuilder.addUserMessage("\nWhat's your next action?");
+  promptBuilder.addUserMessage(
+    "\nWhat's your next action? (Please reply with Ordered List! One action at a time!)",
+  );
 
   // Agent loop
   let retriesLeft = MAX_RETRY;
@@ -36,6 +35,11 @@ export async function* runAgent(agent: IAgent, promptBuilder: PromptBuilder) {
     } else {
       yield `💧 Retries left: ${retriesLeft}\n\n`;
       retriesLeft--;
+    }
+
+    // Reset all tools
+    for (const tool of agent.tools) {
+      tool.reset();
     }
 
     // Build message, abort if not enough context length
@@ -54,9 +58,6 @@ export async function* runAgent(agent: IAgent, promptBuilder: PromptBuilder) {
     });
     const lineStream = streamLines(completion);
 
-    // Build tools for this loop
-    const tools = agent.tools.map((builder) => builder());
-
     // Use tools according to reply
     let selectedTool: ITool | undefined;
     let error = "";
@@ -72,7 +73,7 @@ export async function* runAgent(agent: IAgent, promptBuilder: PromptBuilder) {
 
       // Try to select tool if not selected
       if (!selectedTool) {
-        for (const tool of tools) {
+        for (const tool of agent.tools) {
           if (tool.prefix && line.startsWith(tool.prefix)) {
             selectedTool = tool;
             yield `🔧 Agent selected tool "${tool.name}"!\n\n`;
@@ -84,7 +85,7 @@ export async function* runAgent(agent: IAgent, promptBuilder: PromptBuilder) {
       // Use tool if selected
       if (selectedTool) {
         while (true) {
-          const result = runTool(selectedTool, line, false);
+          const result = await runTool(selectedTool, line);
 
           // Handle error by retrying
           if (result.status === "error") {
@@ -122,7 +123,7 @@ export async function* runAgent(agent: IAgent, promptBuilder: PromptBuilder) {
         MAX_RETRY - retriesLeft + FEEDBACK_PRIORITY,
       );
       promptBuilder.addUserMessage(
-        `Your reply is invalid: ${error}! Please retry!`,
+        `Your reply is invalid: ${error} Please retry!`,
         MAX_RETRY - retriesLeft + FEEDBACK_PRIORITY,
       );
       continue;
@@ -146,22 +147,37 @@ export async function* runAgent(agent: IAgent, promptBuilder: PromptBuilder) {
     // If a tool is selected, check if all steps are done
     // If not, it means the tool stuck in one step
     // Report error and retry in this case!
-    const result = runTool(selectedTool, "", true);
+    const result = checkToolStatus(selectedTool);
     if (result.status === "error") {
-      yield `💀 Tool error: ${result.message}, retrying!\n\n`;
+      yield `💀 Tool error: ${result.message} retrying!\n\n`;
       promptBuilder.addAssistantMessage(
         reply,
         MAX_RETRY - retriesLeft + FEEDBACK_PRIORITY,
       );
       promptBuilder.addUserMessage(
-        `Your reply has wrong format: ${result.message}! Please retry!`,
+        `Your reply has wrong format: ${result.message} Please retry!`,
+        MAX_RETRY - retriesLeft + FEEDBACK_PRIORITY,
+      );
+      continue;
+    } else if (result.status === "complete") {
+      yield `🔥 Tool completed: ${result.message}\n\n`;
+
+      // Finish session if tool is confirm
+      if (selectedTool.name === "confirm") {
+        yield "😱 Session finished!\n\n";
+        break;
+      }
+
+      // Otherwise add assistant message and continue
+      promptBuilder.addAssistantMessage(
+        reply,
+        MAX_RETRY - retriesLeft + FEEDBACK_PRIORITY,
+      );
+      promptBuilder.addUserMessage(
+        `${result.message} What's your next action?`,
         MAX_RETRY - retriesLeft + FEEDBACK_PRIORITY,
       );
       continue;
     }
-
-    // Session finished
-    yield "😱 Session finished!\n\n";
-    break;
   }
 }
