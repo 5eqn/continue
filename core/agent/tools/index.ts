@@ -17,9 +17,6 @@ export interface ITool {
 
   /// Current step index
   currentStep: number;
-
-  /// Reset state of tool
-  reset(): void;
 }
 
 /// Step function of a tool
